@@ -1,4 +1,11 @@
-#!/usr/bin/env python
+#! /usr/bin/env python3
+
+"""This is a prototype work manager which reads work requests from a file and
+   submits them as messages to a RabbitMQ queue.
+
+   This is development only.  For a real system, you would get work from a
+   database or other entity.
+"""
 
 import os
 import sys
@@ -14,12 +21,17 @@ import pika
 logger = None
 SYSTEM = 'PROTO'
 COMPONENT = 'work-manager'
-WORK_QUEUE = None
-STATUS_QUEUE = None
 
 
-# Standard logging filter for using Mesos
+MSG_SERVICE_STRING = None
+MSG_WORK_QUEUE = None
+MSG_STATUS_QUEUE = None
+
+
 class LoggingFilter(logging.Filter):
+    """Standard logging filter for using Mesos
+    """
+
     def __init__(self, system='', component=''):
         super(LoggingFilter, self).__init__()
 
@@ -33,8 +45,10 @@ class LoggingFilter(logging.Filter):
         return True
 
 
-# Standard logging formatter with special execption formatting
 class ExceptionFormatter(logging.Formatter):
+    """Standard logging formatter with special execption formatting
+    """
+
     def __init__(self, fmt=None, datefmt=None):
         std_fmt = ('%(asctime)s.%(msecs)03d'
                    ' %(levelname)-8s'
@@ -64,8 +78,9 @@ class ExceptionFormatter(logging.Formatter):
         return s
 
 
-# Configure the message logging components
 def setup_logging(args):
+    """Configure the message logging components
+    """
 
     global logger
 
@@ -113,23 +128,21 @@ def retrieve_command_line():
                         required=False,
                         type=int,
                         default=0,
-                        choices=[0,10,20,30,40,50],
                         metavar='DEBUG_LEVEL',
                         help='Log debug messages')
 
     return parser.parse_args()
 
 
-def get_messaging_connection_string():
-    # Get the connection string
-    # Example: amqp://<username>:<password>@<host>:<port>
-    connection_var = 'PROTO_MESSAGING_SERVICE_CONNECTION_STRING'
-    connection_string = os.environ.get(connection_var, None)
-    if not connection_string:
-        raise RuntimeError('You must specify {} in the environment'
-                           .format(connection_var))
+def get_env_var(variable, default):
+    """Read variable from the environment and provide a default value
+    """
 
-    return connection_string
+    result = os.environ.get(variable, default)
+    if not result:
+        raise RuntimeError('You must specify {} in the environment'
+                           .format(variable))
+    return result
 
 
 def get_jobs(job_filename):
@@ -154,80 +167,66 @@ def get_jobs(job_filename):
 
 
 def main():
+    """Main processing for the application
+    """
 
-    global WORK_QUEUE
-    global STATUS_QUEUE
+    global MSG_SERVICE_STRING
+    global MSG_WORK_QUEUE
+    global MSG_STATUS_QUEUE
 
-    work_queue_var = 'PROTO_WORK_QUEUE'
-    WORK_QUEUE = os.environ.get(work_queue_var, None)
-    if not WORK_QUEUE:
-        raise RuntimeError('You must specify {} in the environment'
-                           .format(work_queue_var))
-
-    status_queue_var = 'PROTO_STATUS_QUEUE'
-    STATUS_QUEUE = os.environ.get(status_queue_var, None)
-    if not STATUS_QUEUE:
-        raise RuntimeError('You must specify {} in the environment'
-                           .format(status_queue_var))
+    # Example connection string: amqp://<username>:<password>@<host>:<port>
+    MSG_SERVICE_STRING = get_env_var('PROTO_MSG_SERVICE_CONNECTION_STRING', None)
+    MSG_WORK_QUEUE = get_env_var('PROTO_MSG_WORK_QUEUE', None)
+    MSG_STATUS_QUEUE = get_env_var('PROTO_MSG_STATUS_QUEUE', None)
 
     args = retrieve_command_line()
 
     # Configure logging
     setup_logging(args)
 
-    # Get the connection string
-    connection_string = get_messaging_connection_string()
-
     # Create the connection parameters
-    connection_parms = pika.connection.URLParameters(connection_string)
+    connection_parms = pika.connection.URLParameters(MSG_SERVICE_STRING)
 
-    queue_properties = properties=pika.BasicProperties(delivery_mode=2)
+    queue_properties = pika.BasicProperties(delivery_mode=2)
 
     logger.info('Beginning Processing')
 
     try:
-        while(True):
-            try:
-                # Create the connection
-                connection = pika.BlockingConnection(connection_parms)
+        while True:
+            # Create the connection
+            with pika.BlockingConnection(connection_parms) as connection:
+                # Open a channel
+                with connection.channel() as channel:
 
-                try:
-                    # Open a channel
-                    channel = connection.channel()
                     # Create/assign the queue to use
-                    channel.queue_declare(queue=WORK_QUEUE, durable=True)
+                    channel.queue_declare(queue=MSG_WORK_QUEUE, durable=True)
 
                     jobs = get_jobs(args.job_filename)
                     for job in jobs:
                         message_json = json.dumps(job, ensure_ascii=False)
 
-                        if channel.basic_publish(exchange='',
-                                                 routing_key=WORK_QUEUE,
-                                                 body=message_json,
-                                                 properties=queue_properties,
-                                                 mandatory=True):
+                        try:
+                            channel.basic_publish(exchange='',
+                                                  routing_key=MSG_WORK_QUEUE,
+                                                  body=message_json,
+                                                  properties=queue_properties,
+                                                  mandatory=True)
+
+                            # TODO - This prototype doesn't care, but we
+                            # TODO -   should probably update the status at
+                            # TODO -   the work source.
                             print('Queued Message = {}'.format(message_json))
-                        else:
-                            # TODO TODO TODO - Something needs to be done when this fails
+                        except pika.exceptions.ChannelClosed:
+                            # TODO - This prototype doesn't care, but does
+                            # TODO -   something need to be done if this
+                            # TODO -   happens?
                             print('Returned Message = {}'.format(message_json))
-
-                finally:
-                    # Make sure the channel gets closed
-                    try:
-                        channel.close()
-                    except pika.exceptions.ChannelClosed:
-                        pass
-
-            finally:
-                # Make sure the connection gets closed
-                try:
-                    connection.close()
-                except pika.exceptions.ConnectionClosed:
-                    pass
 
             sleep(60)
 
     except KeyboardInterrupt:
+        pass
+    except pika.exceptions.ConnectionClosed:
         pass
 
     logger.info('Terminated Processing')
