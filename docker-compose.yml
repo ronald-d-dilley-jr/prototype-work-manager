@@ -1,0 +1,16 @@
+version: '2'
+
+services:
+  work_manager:
+    image: prototype/work-manager:0.0.1.0
+    entrypoint:
+      - /bin/proto-work-manager.py
+    command:
+      - --job-filename=/job-dir/jobs.json
+    network_mode: "host"
+    volumes:
+      - ${HOME}/job-dir:/job-dir
+    environment:
+      PROTO_MSG_WORK_QUEUE: ${PROTO_MSG_WORK_QUEUE}
+      PROTO_MSG_STATUS_QUEUE: ${PROTO_MSG_STATUS_QUEUE}
+      PROTO_MSG_SERVICE_CONNECTION_STRING: ${PROTO_MSG_SERVICE_CONNECTION_STRING}
