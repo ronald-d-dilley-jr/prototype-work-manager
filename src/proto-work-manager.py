@@ -14,8 +14,10 @@ import logging
 from argparse import ArgumentParser
 from time import sleep
 
-
-import pika
+import proton
+from proton import Message
+from proton.utils import BlockingConnection
+from proton.handlers import IncomingMessageHandler
 
 
 logger = None
@@ -184,50 +186,43 @@ def main():
     # Configure logging
     setup_logging(args)
 
-    # Create the connection parameters
-    connection_parms = pika.connection.URLParameters(MSG_SERVICE_STRING)
-
-    queue_properties = pika.BasicProperties(delivery_mode=2)
-
-    logger.info('Beginning Processing')
+    logger.info('Begin Processing')
 
     try:
         while True:
-            # Create the connection
-            with pika.BlockingConnection(connection_parms) as connection:
-                # Open a channel
-                with connection.channel() as channel:
+            try:
+                # Create the connection
+                connection = BlockingConnection(MSG_SERVICE_STRING)
+                # Create a sender
+                sender = connection.create_sender(MSG_WORK_QUEUE)
 
-                    # Create/assign the queue to use
-                    channel.queue_declare(queue=MSG_WORK_QUEUE, durable=True)
+                jobs = get_jobs(args.job_filename)
+                for job in jobs:
+                    message_json = json.dumps(job, ensure_ascii=False)
 
-                    jobs = get_jobs(args.job_filename)
-                    for job in jobs:
-                        message_json = json.dumps(job, ensure_ascii=False)
+                    try:
+                        sender.send(Message(body=message_json))
 
-                        try:
-                            channel.basic_publish(exchange='',
-                                                  routing_key=MSG_WORK_QUEUE,
-                                                  body=message_json,
-                                                  properties=queue_properties,
-                                                  mandatory=True)
+                        # TODO - This prototype doesn't care, but we
+                        # TODO -   should probably update the status at
+                        # TODO -   the work source.
+                        print('Queued Message = {}'.format(message_json))
 
-                            # TODO - This prototype doesn't care, but we
-                            # TODO -   should probably update the status at
-                            # TODO -   the work source.
-                            print('Queued Message = {}'.format(message_json))
-                        except pika.exceptions.ChannelClosed:
-                            # TODO - This prototype doesn't care, but does
-                            # TODO -   something need to be done if this
-                            # TODO -   happens?
-                            print('Returned Message = {}'.format(message_json))
+                    except proton.ConnectionException:
+                        # TODO - This prototype doesn't care, but does
+                        # TODO -   something need to be done if this
+                        # TODO -   happens?
+                        print('Returned Message = {}'.format(message_json))
+
+            finally:
+                connection.close()
 
             sleep(60)
 
     except KeyboardInterrupt:
         pass
-    except pika.exceptions.ConnectionClosed:
-        pass
+    #except pika.exceptions.ConnectionClosed:
+    #    pass
 
     logger.info('Terminated Processing')
 
